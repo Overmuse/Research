@@ -1,4 +1,5 @@
-using DataFrames, LibPQ, LinearAlgebra, Statistics
+using DataFrames, DotEnv, LibPQ, LinearAlgebra, Statistics
+DotEnv.config()
 
 conn = LibPQ.Connection("host=$(ENV["AIAIADB_HOST"]) user=postgres password=$(ENV["AIAIADB_PASSWORD"]) dbname=aiaiadb")
 query = "SELECT * FROM adjusted_prices WHERE datetime >= '2016-06-04'"
