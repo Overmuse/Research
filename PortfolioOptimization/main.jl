@@ -1,10 +1,32 @@
-using DataFrames, DotEnv, LibPQ, LinearAlgebra, Statistics
+using
+    BlackLitterman,
+    CovarianceEstimation,
+    DataFrames,
+    Dates,
+    DotEnv,
+    LibPQ,
+    LinearAlgebra,
+    Statistics
+
 DotEnv.config()
 
-conn = LibPQ.Connection("host=$(ENV["AIAIADB_HOST"]) user=postgres password=$(ENV["AIAIADB_PASSWORD"]) dbname=aiaiadb")
-query = "SELECT * FROM adjusted_prices WHERE datetime >= '2016-06-04'"
-res = DataFrame(execute(conn, query))
-close(conn)
-res = transform(groupby(res, :ticker), :close => (x -> vcat(missing, x[2:end] ./ x[1:end-1])) => :return)
-returns = unstack(res[:, [:datetime, :ticker, :return]], :ticker, :return)
-cov(Matrix(returns[2:end, 2:end]))
+include("download_data.jl")
+include("market_caps.jl")
+
+returns = download_data()
+returns = select(select(returns, Not(:yearmonth)), Not(:IGOV))
+excess_returns = select(returns .- returns.SHV, Not(:SHV))
+Σ = Matrix(cov(AnalyticalNonlinearShrinkage(), Matrix{Float64}(excess_returns)))
+global_weights = map(x -> x / sum(values(MARKET_CAPS)), MARKET_CAPS)
+weights = [
+    global_weights[:US_IG_DEBT],
+    global_weights[:DEVELOPED_DEBT],
+    global_weights[:EMERGING_DEBT],
+    global_weights[:US_HY_DEBT],
+    global_weights[:DEVELOPED_EQUITY],
+    global_weights[:US_EQUITY],
+    global_weights[:EMERGING_EQUITY],
+]
+μ = market_expected_returns(Σ, weights)
+
+# Views for dividend yields
