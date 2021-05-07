@@ -1,9 +1,11 @@
-using LinearAlgebra, Statistics, JuMP, Cbc, GLM, Polygon, ProgressMeter, DataFrames
+using LinearAlgebra, Statistics, JuMP, Cbc, GLM, Polygon, ProgressMeter, DataFrames, CovarianceEstimation, StatsBase, DataFramesMeta, LibPQ
 
 function factors(X, n)
-    C = cor(X)
+    Σ = cov(AnalyticalNonlinearShrinkage(), X)
+    σ = sqrt.(diag(Σ))
+    C = cov2cor(Matrix(Σ), σ)
     v = reverse(eigvecs(C), dims=2)[:, 1:n]
-    q = v ./ std(X, dims = 1)'
+    q = v ./ σ
     F = X * q 
 end
 
@@ -53,31 +55,34 @@ end
 
 function signal(model::OrnsteinUhlenbeck, u; r²_cutoff = 0.0)
     if !model.success || model.r² < r²_cutoff
-        0
+        [nothing]
     else
         (cumsum(u) .- model.m) ./ (model.σ₌)
     end
 end
 
 function trade_signal(s, position)
-    if position == 0 && s > 1.25
+    if isnothing(s)
+        sign(position)
+    elseif (position == 0 && s > 1.25) || (position < 0 && s > 0.5)
         -1
-    elseif position == 0 && s < -1.25
-        1
-    elseif position > 0 && s > -0.5
-        -1
-    elseif position < 0 && s < 0.5
+    elseif (position == 0 && s < -1.25) || (position > 0 && s < -0.5)
         1
     else
         0
     end
 end
 
-function optimize(s, β, w, leverage; opt = Cbc.Optimizer(logLevel = 0))
+function optimize(s, positions, β, w, leverage; opt = Cbc.Optimizer(logLevel = 0))
     n = length(s)
     p = size(β, 1)
     m = Model(() -> opt)
-    U = Set(i for (i, x) in enumerate(s) if iszero(x))
+    U = Set{Int}()
+    for (i, (signal, pos)) in enumerate(zip(s, positions))
+        if sign(signal) == sign(pos)
+            push!(U, i)
+        end
+    end
     C = setdiff(Set(1:n), U)
     @variable(m, q[1:n]) # amount invested in asset
     @variable(m, b[1:n], Bin)
@@ -88,13 +93,16 @@ function optimize(s, β, w, leverage; opt = Cbc.Optimizer(logLevel = 0))
     # f⁺ + f⁻ == |f|
     @variable(m, 0 <= f⁺[1:p])
     @variable(m, 0 <= f⁻[1:p])
-    for i in 1:n
-        if s[i] > 0
-            @constraint(m, q[i] >= 0)
-        elseif s[i] < 0
-            @constraint(m, q[i] <= 0)
-        else
-            @constraint(m, q[i] == 0)
+    for u in U
+        @constraint(m, q[u] == positions[u])
+    end
+    for c in C
+        if s[c] > 0
+            @constraint(m, q[c] >= 0)
+        elseif s[c] < 0
+            @constraint(m, q[c] <= 0)
+         else
+            @constraint(m, q[c] == 0)
         end
     end
     @constraint(m, f .== f⁺ .- f⁻)
@@ -110,48 +118,60 @@ function optimize(s, β, w, leverage; opt = Cbc.Optimizer(logLevel = 0))
         value.(q)
     catch e
         # Failed to solve, so no investments
-        zeros(n)
+        positions
     end
 end
 
-function download_data(tickers, start_date, end_date)
-    data = mapreduce((a, b) -> outerjoin(a, b, on = :t, makeunique=true), tickers) do ticker
-        @info ticker
-        dicts = get_historical_range(get_credentials(), ticker, start_date, end_date, 1, "day", adjusted=true)
-        df = reduce(vcat, DataFrame.(dicts))
-        select(df, :t, :c)
-    end
-    data_matrix = Matrix(data[:, 2:end])
-    data_matrix[2:end, :] ./ data_matrix[1:end-1, :] .- 1
+#function download_data(tickers, start_date, end_date)
+#    data = mapreduce((a, b) -> outerjoin(a, b, on = :t, makeunique=true), tickers) do ticker
+#        @info ticker
+#        dicts = get_historical_range(get_credentials(), ticker, start_date, end_date, 1, "day", adjusted=true)
+#        df = reduce(vcat, DataFrame.(dicts))
+#        select(df, :t, :c)
+#    end
+#    data_matrix = Matrix(data[:, 2:end])
+#    data_matrix[2:end, :] ./ data_matrix[1:end-1, :] .- 1
+#end
+
+function download_data()
+    conn = LibPQ.Connection("user=postgres password=password host=localhost port=5432 dbname=data")
+    data = LibPQ.execute(conn, "SELECT * FROM adjusted_prices WHERE datetime > '2010-01-01';") |> DataFrame
+    spread = @linq data |>
+        select(:ticker, :datetime, :close) |>
+        unstack(:ticker, :close)
+    indices = map(x -> !any(ismissing, x), eachcol(spread))
+    full = disallowmissing(spread[:, indices])
+    Matrix(full[2:end, 2:end] ./ full[1:end-1, 2:end] .- 1)
 end
 
-function backtest(ret_matrix; training_length = size(ret_matrix, 1) ÷ 2, n_assets = 10, n_factors = 5, lookback = 60, r²_cutoff = 0.9)
-    positions = zeros(size(ret_matrix))
-    p1 = Progress(length(lookback+1:1+training_length), desc = "Training")
-    # training loop
-    Κ = mapreduce(hcat, lookback+1:1:training_length) do t
-        next!(p1)
-        X = view(ret_matrix, t-lookback:t, :)
-        F = factors(X, n_factors)
-        β = F \ X 
-        residuals = X .- F * β
-        models = fit_ou(residuals)
-        getfield.(models, :κ)
-    end
-    model_idx = sortperm(vec(mean(Κ, dims = 2)), rev = true)[1:n_assets]
-    p2 = Progress(length(training_length+1:1:size(ret_matrix, 1)), desc = "Testing")
-    # test loop
-    for t in training_length+1:1:size(ret_matrix, 1)
-        X = view(ret_matrix, t-lookback:t-1, :)
-        F = factors(X, n_factors)
-        β = F \ X
-        residuals = X .- F * β
-        models = fit_ou(residuals[:, model_idx])
-        signals = map(last, signal.(models, eachcol(residuals[:, model_idx]), r²_cutoff = r²_cutoff))
-        trade_signals = trade_signal.(signals, positions[t, model_idx])
-        trades = optimize(trade_signals, β, fill(1/n_factors, n_factors), 1000.0)
-        positions[t:end, model_idx] .+= trades'
-        next!(p2)
+function backtest(ret_matrix; training_length = size(ret_matrix, 1) ÷ 2, n_assets = 10, n_factors = 5, lookback = 60, r²_cutoff = 0.75)
+    T, n = size(ret_matrix)
+    positions = zeros(T, n)
+    K = zeros(training_length - lookback, n)
+    @showprogress for t in training_length+1:lookback:T-lookback
+        # training loop
+        Threads.@threads for t1 in t-training_length:t-lookback-1
+            X = view(ret_matrix, t1:t1+lookback-1, :)
+            F = factors(X, n_factors)
+            β = F \ X 
+            residuals = X .-  F * β
+            models = fit_ou(residuals)
+            K[mod1(t1, training_length-lookback), :] .= getfield.(models, :κ)
+        end
+        for t2 in t-1:t+lookback-2
+            model_idx = partialsortperm(vec(mean(K, dims = 1)), 1:n_assets, rev = true)
+            X = view(ret_matrix, t2-lookback+1:t2, :)
+            F = factors(X, n_factors)
+            β =  F \ X 
+            residuals = X .-  F * β
+            signals = Vector{Union{Float64, Nothing}}(undef, n)
+            signals .= 0
+            models = fit_ou(residuals[:, model_idx])
+            signals[model_idx] .= map(last, signal.(models, eachcol(residuals[:, model_idx]), r²_cutoff = r²_cutoff))
+            trade_signals = trade_signal.(signals, positions[t2, :])
+            trades = optimize(trade_signals, positions[t2, :], β[2:end, :], fill(1/n_factors, n_factors), 1000.0)
+            positions[t2+1:end, :] .= trades'
+        end
     end
     positions
 end
