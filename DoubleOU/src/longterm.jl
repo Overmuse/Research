@@ -17,6 +17,7 @@ end
 
 function log_likelihood(L, δ₁, δ₂, θ, σ₁, σ₂)
     (σ₁ < 0 || σ₂ < 0) && return -Inf
+    length(L) % 2 == 0 || error("not even")
     N = length(L)÷2
     -N / 2 * log(2π) - N * log(σ₁) - 1/(2σ₁^2)*sum((L[2i]-L[2i-1]*exp(-θ*δ₁))^2 for i in 1:N) - (N-1)/2 * log(2π) - (N-1)*log(σ₂) - 1/(2σ₂^2)*sum((L[2i+1]-L[2i]*exp(-θ*δ₂))^2 for i in 1:N-1)
 end

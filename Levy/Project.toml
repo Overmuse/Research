@@ -1,0 +1,8 @@
+name = "Levy"
+uuid = "d77497c0-3048-4db8-9aa2-a3c40708aa2e"
+authors = ["Sebastian Rollen <seb@overmu.se>"]
+version = "0.1.0"
+
+[deps]
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+Polygon = "6c90dff6-b80f-4bd2-aa9c-319c6ebead32"

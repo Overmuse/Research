@@ -70,7 +70,7 @@ function choose_stocks(data, n=10)
     chosen
 end
 
-function backtest(data, starting_cash=1000.0; fee = 0.0005)
+function backtest(data, starting_cash=1000.0; fee = 0.00025, n_stocks = 10)
     dates = Date.(data.datetime) |> unique
     T = length(dates)
     cash = zeros(T)
@@ -86,7 +86,7 @@ function backtest(data, starting_cash=1000.0; fee = 0.0005)
         log_prices = log.(Matrix(train_data[:, 2:end])) # skip datetime
         log_returns = log_prices[2:end, :] .- log_prices[1:end-1, :]
         indices = map(x -> !any(ismissing, x), eachcol(log_returns))
-        stocks_indices = findall(indices)[choose_stocks(disallowmissing(log_returns[:, indices]))]
+        stocks_indices = findall(indices)[choose_stocks(disallowmissing(log_returns[:, indices]), n_stocks)]
         zs = abs.(zscore.(eachcol(log_returns[:, stocks_indices])))
         n = length(stocks_indices)
         jump_sign = sign.(log_returns[end, stocks_indices])

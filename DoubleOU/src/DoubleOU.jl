@@ -83,13 +83,13 @@ function main(data; n=50)
         cash_change = 0.0
         for idx in best_spreads
             pair = index_to_pair(idx)
-            ϵ = quantile(abs.(longterm_spreads[2:end, idx] .- longterm_spreads[1:end-1, idx]), 0.98)
+            ϵ = quantile(abs.(longterm_spreads[2:end, idx] .- longterm_spreads[1:end-1, idx]), 0.95)
             trade_data = vcat(shortterm_data[:, [pair...]], filtered_data[end-78:end, [pair...]])
 			trade_spread = vec(spreads(trade_data))
             mean_L = (trade_spread[2370] + trade_spread[2371]) / 2
             pos = 0
             shares = (0.0, 0.0)
-			for t in 2371:2449
+            for t in 2371:2439 # 2349 because we close 10 minutes before end of day
                 if (pos == 0) && (trade_spread[t] > mean_L + ϵ)
                     pos = -1
                     shares = (-1/trade_data[t, 1], 1/trade_data[t, 2])

@@ -57,7 +57,7 @@ function signal(model::OrnsteinUhlenbeck, u; r²_cutoff = 0.0)
     if !model.success || model.r² < r²_cutoff
         [nothing]
     else
-        (cumsum(u) .- model.m) ./ (model.σ₌)
+        (cumsum(u) .- mean(u)) ./ (std(u) / √model.κ)
     end
 end
 
@@ -122,17 +122,6 @@ function optimize(s, positions, β, w, leverage; opt = Cbc.Optimizer(logLevel = 
     end
 end
 
-#function download_data(tickers, start_date, end_date)
-#    data = mapreduce((a, b) -> outerjoin(a, b, on = :t, makeunique=true), tickers) do ticker
-#        @info ticker
-#        dicts = get_historical_range(get_credentials(), ticker, start_date, end_date, 1, "day", adjusted=true)
-#        df = reduce(vcat, DataFrame.(dicts))
-#        select(df, :t, :c)
-#    end
-#    data_matrix = Matrix(data[:, 2:end])
-#    data_matrix[2:end, :] ./ data_matrix[1:end-1, :] .- 1
-#end
-
 function download_data()
     conn = LibPQ.Connection("user=postgres password=password host=localhost port=5432 dbname=data")
     data = LibPQ.execute(conn, "SELECT * FROM adjusted_prices WHERE datetime > '2010-01-01';") |> DataFrame
@@ -170,7 +159,7 @@ function backtest(ret_matrix; training_length = size(ret_matrix, 1) ÷ 2, n_asse
             signals[model_idx] .= map(last, signal.(models, eachcol(residuals[:, model_idx]), r²_cutoff = r²_cutoff))
             trade_signals = trade_signal.(signals, positions[t2, :])
             trades = optimize(trade_signals, positions[t2, :], β[2:end, :], fill(1/n_factors, n_factors), 1000.0)
-            positions[t2+1:end, :] .= trades'
+            positions[t2+1:min(t2+5, end), :] .= trades'
         end
     end
     positions
